@@ -1,0 +1,15 @@
+{
+    "manifest_version": 3,
+    "name": "YouTube Q&A Assistant",
+    "version": "1.0",
+    "description": "Ask questions about YouTube videos using LLMs.",
+    "permissions": ["activeTab", "scripting"],
+    "action": {
+      "default_popup": "popup.html",
+      "default_title": "Ask the Video"
+    },
+    "icons": {
+      "48": "icon.png"
+    }
+  }
+  
