@@ -4,18 +4,23 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
+import logging
+
+# Suppress the specific warning from the Google API client
+logging.getLogger('google.auth.transport.requests').setLevel(logging.ERROR)
+
 
 # Load environment variables from .env file
 load_dotenv()
 
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import NoTranscriptFound
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain.retrievers import ContextualCompressionRetriever
+from langchain_core.runnables import RunnablePassthrough
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain.retrievers.document_compressors import LLMChainExtractor
+from langchain_community.document_loaders import YoutubeLoader
 
 # Init FastAPI app
 app = FastAPI()
@@ -35,31 +40,23 @@ class QARequest(BaseModel):
     question: str
 
 # Core LLM model
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.3)
+llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3)
 
 # Prompt
 prompt = PromptTemplate(
     input_variables=["context", "question"],
     template="""
-You are a helpful assistant summarizing and explaining content from a YouTube video transcript.
-Answer the user's question based on the context provided below.
+You are a helpful assistant. Answer the user's question based on the context from the YouTube video transcript provided below.
 
-Respond clearly and concisely in your own words generalise the answer more in your own words along with the transcripts. Do not repeat the transcript verbatim unless necessary.
-Use examples or paraphrasing to explain complex ideas. Stay grounded in the video content.
+Provide a clear and concise answer. If the context doesn't contain the answer, say that you couldn't find the answer in the transcript.
 
---- BEGIN TRANSCRIPT CONTEXT ---
+--- BEGIN CONTEXT ---
 {context}
---- END TRANSCRIPT CONTEXT ---
+--- END CONTEXT ---
 
 Question: {question}
 """
 )
-
-# Rewrite Chain
-rewrite_prompt = PromptTemplate.from_template(
-    "Rewrite the following query to be more specific and clearer:\n{query}"
-)
-rewrite_chain = rewrite_prompt | llm | StrOutputParser()
 
 # Util
 def extract_video_id(url: str):
@@ -68,46 +65,51 @@ def extract_video_id(url: str):
         return url.split("v=")[-1].split("&")[0]
     elif "youtu.be/" in url:
         return url.split("youtu.be/")[-1].split("?")[0]
-    return url  # fallback (assumes raw video ID)
+    return None  # Return None if ID can't be extracted
 
 @app.post("/ask")
 async def ask_question(payload: QARequest):
     try:
-        # 1. Get transcript
         video_id = extract_video_id(payload.url)
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["en"])
-        transcript = " ".join(chunk["text"] for chunk in transcript_list)
+        if not video_id:
+            return JSONResponse(content={"error": "Invalid YouTube URL provided."}, status_code=400)
+
+        # 1. Get transcript using LangChain's loader
+        loader = YoutubeLoader(video_id=video_id)
+        transcript_docs = loader.load()
+
+        if not transcript_docs:
+            return JSONResponse(content={"error": "Could not load transcript."}, status_code=404)
 
         # 2. Split
-        splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=500)
-        chunks = splitter.create_documents([transcript])
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)
+        chunks = splitter.split_documents(transcript_docs)
 
         # 3. Embed + store
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         vector_store = FAISS.from_documents(chunks, embeddings)
 
-        # 4. Retrieval with compression
-        base_retriever = vector_store.as_retriever(
-            search_type="mmr", search_kwargs={"k": 8, "fetch_k": 20}
+        # 4. Retriever
+        retriever = vector_store.as_retriever()
+
+        # 5. Create RAG chain
+        def format_docs(docs):
+            return "\n\n".join(doc.page_content for doc in docs)
+
+        rag_chain = (
+            {"context": retriever | format_docs, "question": RunnablePassthrough()}
+            | prompt
+            | llm
+            | StrOutputParser()
         )
-        compressor = LLMChainExtractor.from_llm(llm)
-        retriever = ContextualCompressionRetriever(
-            base_compressor=compressor, base_retriever=base_retriever
-        )
 
-        # 5. Rewrite query
-        rewritten = rewrite_chain.invoke({"query": payload.question})
+        # 6. Invoke chain and get response
+        final_response = rag_chain.invoke(payload.question)
+        return JSONResponse(content={"answer": final_response})
 
-        # 6. Retrieve docs
-        docs = retriever.invoke(rewritten)
-        context = "\n\n".join(doc.page_content for doc in docs)
-
-        # 7. Final prompt & response
-        filled_prompt = prompt.format(context=context, question=rewritten)
-        
-        final_response = llm.invoke(filled_prompt)
-        return JSONResponse(content={"answer": final_response.content})
-  
-    
+    except NoTranscriptFound:
+        return JSONResponse(content={"error": "No English transcript found for this video."}, status_code=404)
     except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        # Log the exception for debugging
+        print(f"An unexpected error occurred: {e}")
+        return JSONResponse(content={"error": "An internal server error occurred."}, status_code=500)
