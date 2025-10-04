@@ -5,19 +5,16 @@ from pydantic import BaseModel
 import os
 from dotenv import load_dotenv
 
-# Load .env if using API keys
+# Load environment variables from .env file
 load_dotenv()
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
 
 from youtube_transcript_api import YouTubeTranscriptApi
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
-from langchain.chat_models import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 from langchain.retrievers import ContextualCompressionRetriever
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain.retrievers.document_compressors import LLMChainExtractor
 
 # Init FastAPI app
@@ -38,7 +35,7 @@ class QARequest(BaseModel):
     question: str
 
 # Core LLM model
-llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
+llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.3)
 
 # Prompt
 prompt = PromptTemplate(
@@ -47,7 +44,7 @@ prompt = PromptTemplate(
 You are a helpful assistant summarizing and explaining content from a YouTube video transcript.
 Answer the user's question based on the context provided below.
 
-Respond clearly and concisely in your own words. Do not repeat the transcript verbatim unless necessary.
+Respond clearly and concisely in your own words generalise the answer more in your own words along with the transcripts. Do not repeat the transcript verbatim unless necessary.
 Use examples or paraphrasing to explain complex ideas. Stay grounded in the video content.
 
 --- BEGIN TRANSCRIPT CONTEXT ---
@@ -62,7 +59,7 @@ Question: {question}
 rewrite_prompt = PromptTemplate.from_template(
     "Rewrite the following query to be more specific and clearer:\n{query}"
 )
-rewrite_chain = LLMChain(llm=llm, prompt=rewrite_prompt)
+rewrite_chain = rewrite_prompt | llm | StrOutputParser()
 
 # Util
 def extract_video_id(url: str):
@@ -86,7 +83,7 @@ async def ask_question(payload: QARequest):
         chunks = splitter.create_documents([transcript])
 
         # 3. Embed + store
-        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         vector_store = FAISS.from_documents(chunks, embeddings)
 
         # 4. Retrieval with compression
@@ -99,7 +96,7 @@ async def ask_question(payload: QARequest):
         )
 
         # 5. Rewrite query
-        rewritten = rewrite_chain.run({"query": payload.question})
+        rewritten = rewrite_chain.invoke({"query": payload.question})
 
         # 6. Retrieve docs
         docs = retriever.invoke(rewritten)
@@ -114,4 +111,3 @@ async def ask_question(payload: QARequest):
     
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
-

@@ -1,21 +1,22 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>YouTube Q&A</title>
-  <style>
-    body { font-family: sans-serif; padding: 10px; width: 300px; }
-    textarea, input { width: 100%; margin-top: 5px; }
-    button { margin-top: 10px; width: 100%; }
-    .answer { margin-top: 15px; background: #f0f0f0; padding: 10px; border-radius: 8px; }
-  </style>
+    <meta charset="UTF-8">
+    <title>YouTube Q&A</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <h3>Ask about a YouTube Video</h3>
-  <input type="text" id="youtubeLink" placeholder="Paste YouTube URL" />
-  <textarea id="question" rows="3" placeholder="Ask a question..."></textarea>
-  <button id="submitBtn">Ask</button>
-  <div id="response" class="answer"></div>
-
-  <script src="popup.js"></script>
+    <div class="container">
+        <div class="header">
+            <img src="icon.png" alt="icon" class="logo">
+            <h3>YouTube Q&A</h3>
+        </div>
+        <input type="text" id="youtubeLink" placeholder="Paste YouTube URL">
+        <textarea id="question" rows="4" placeholder="Ask a question..."></textarea>
+        <button id="submitBtn">Ask</button>
+        <div id="loader" class="loader" style="display: none;"></div>
+        <div id="response" class="answer"></div>
+    </div>
+    <script src="popup.js"></script>
 </body>
 </html>
